@@ -8,6 +8,7 @@
 #include "pgmer.hpp"
 #include "img.h"
 
+
 void DrawImg(Matrix *mat, int x, int y){
     HWND wnd;	//窗口句柄
     HDC dc;	//绘图设备环境句柄
@@ -26,15 +27,14 @@ void DrawImg(Matrix *mat, int x, int y){
 
 int main(){
     Pgmer p1;
-    p1.ReadImg("01.pgm");
+    p1.ReadImg("imgs/t1.pgm");
     std::cout << "convert img 1 to mat" << std::endl;
     Matrix *mat1 = p1.To2DMatrix();
     KeyPointGroup *kp1 =  SIFT(mat1);
-
     std::cout << "img 1 have " << kp1->number - 1 << " keypoint" << std::endl;
 
     Pgmer p2;
-    p2.ReadImg("02.pgm");
+    p2.ReadImg("imgs/t2.pgm");
     std::cout << "convert img 2 to mat" << std::endl;
     Matrix *mat2 = p2.To2DMatrix();
     KeyPointGroup *kp2 =  SIFT(mat2);

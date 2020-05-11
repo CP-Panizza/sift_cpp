@@ -105,6 +105,7 @@ public:
     int OctaveNum;    //金字塔层数
     int IntervalNum;  //每一层矩阵数
     Matrix **mats;    //金字塔数据
+    int n;            //n + 3
 
     ImagePyramid() {}
 
@@ -115,6 +116,7 @@ public:
      * @param s
      */
     void build(Matrix *origin, int t, int s) {
+        this->n = s;
         this->OctaveNum = static_cast<int>(
                 (log(double(min(origin->height, origin->width))) - log(double(t))) / log(2.0) + 1);
         this->IntervalNum = s + 3;
@@ -147,6 +149,7 @@ public:
      */
     ImagePyramid *buildDiff() {
         ImagePyramid *diff = new ImagePyramid;
+        diff->n = this->n;
         diff->OctaveNum = this->OctaveNum;
         diff->IntervalNum = this->IntervalNum - 1; //张数减1
         diff->mats = new Matrix *[diff->OctaveNum];
@@ -237,6 +240,48 @@ int MaxIndex(double *array, int length) {
     return max_sign;
 }
 
+void adjustLocalExtrema(ImagePyramid *DoG, int o, int s, int x, int y, double contrastThreshold, double edgeThreshold,
+                        double sigma, int n, int SIFT_FIXPT_SCALE) {
+    double SIFT_MAX_INTERP_STEPS = 5;
+    double SIFT_IMG_BORDER = 5;
+    double img_scale = 1.0 / (255 * SIFT_FIXPT_SCALE);
+    double deriv_scale = img_scale * 0.5;
+    double second_deriv_scale = img_scale;
+    double cross_deriv_scale = img_scale * 0.25;
+    auto img = DoG->mats[o][s];
+    auto prev = DoG->mats[o][s - 1];
+    auto next = DoG->mats[o][s + 1];
+    int i = 0;
+    while (i < SIFT_MAX_INTERP_STEPS) {
+        if (s < 1 || s > n || y < SIFT_IMG_BORDER || y >= img.width - SIFT_IMG_BORDER || x < SIFT_IMG_BORDER ||
+            x >= img.height - SIFT_IMG_BORDER) {
+            return;
+        }
+        double dD[] = {(img.data[x][y + 1] - img.data[x][y - 1]) * deriv_scale,
+                       (img.data[x + 1][y] - img.data[x - 1][y]) * deriv_scale,
+                       (next.data[x][y] - prev.data[x][y]) * deriv_scale};
+
+        double v2 = (img.data[x][y]) * 2;
+        double dxx = (img.data[x][y + 1] + img.data[x][y - 1] - v2) * second_deriv_scale;
+        double dyy = (img.data[x + 1][y] + img.data[x - 1][y] - v2) * second_deriv_scale;
+        double dss = (next.data[x][y] + prev.data[x][y] - v2) * second_deriv_scale;
+        double dxy =
+                (img.data[x + 1][y + 1] - img.data[x + 1][y - 1] - img.data[x - 1][y + 1] + img.data[x - 1][y - 1]) *
+                cross_deriv_scale;
+        double dxs = (next.data[x][y + 1] - next.data[x][y - 1] - prev.data[x][y + 1] + prev.data[x][y - 1]) *
+                     cross_deriv_scale;
+        double dys = (next.data[x + 1][y] - next.data[x - 1][y] - prev.data[x + 1][y] + prev.data[x - 1][y]) *
+                     cross_deriv_scale;
+
+        double H[3][3] = {{dxx, dxy, dxs},
+                          {dxy, dyy, dys},
+                          {dxs, dys, dss}};
+
+
+
+    }
+}
+
 
 /**
  * 寻找关键点
@@ -244,14 +289,15 @@ int MaxIndex(double *array, int length) {
  * @param diff_ip
  * @return
  */
-KeyPointGroup *SearchKeyPointPosition(ImagePyramid *ip, ImagePyramid *diff_ip, bool method_flag = true) {
-    int count;//计数
+KeyPointGroup *SearchKeyPointPosition(ImagePyramid *ip, ImagePyramid *diff_ip) {
+    int big_then_count;//大于计数
+    int small_then_count; //小于计数
     int p, q;
-    int flag;
     int octavenum = diff_ip->OctaveNum;
     int intervalnum = diff_ip->IntervalNum;
-    double threshold2 = 5;//极值点所在处的阈值0.03*255
-    double prelim_contr_thr = 0.5 * 0.04 / intervalnum;
+    double threshold2 = 0.04 / diff_ip->n; //极值点低对比度极值 0.04/n
+    const int SIFT_FIXPT_SCALE = 1;
+    double prelim_contr_thr = 0.5 * 0.04 / (diff_ip->n * 255 * SIFT_FIXPT_SCALE);
     int length = 1;//极值点个数, 第一个点没用
     double k = pow((float) 2, 1 / (float) intervalnum);
     KeyPointGroup *Keypointgroup = (KeyPointGroup *) malloc(sizeof(KeyPointGroup));
@@ -270,119 +316,35 @@ KeyPointGroup *SearchKeyPointPosition(ImagePyramid *ip, ImagePyramid *diff_ip, b
                     if (fabs(diff_ip->mats[i][j].data[h][w]) < prelim_contr_thr) { //对像素点进行阈值化去除
                         continue;
                     }
-
-                    if (method_flag) {
-                        flag = 1;
-                        /**
-                         * 三个尺度内的26个点进行极值点比较
-                         */
-                        count = 0;
-                        for (int m = -1; m < 2; ++m) {
-                            for (p = -1; p < 2; p++) {
-                                for (q = -1; q < 2; q++) {
-                                    if (diff_ip->mats[i][j].data[h][w] >= diff_ip->mats[i][j + m].data[h + p][w + q]) {
-                                        count++;
-                                    }
-                                }
-                            }
-                        }
-
-                        if (count == 27 && fabs(diff_ip->mats[i][j].data[h][w]) > threshold2) {
-                            flag = 0;
-                            length++;
-                            TempPoint = (KeyPoint *) realloc(TempPoint, sizeof(KeyPoint) * length);
-                            TempPoint[length - 1].point.row = h;
-                            TempPoint[length - 1].point.col = w;
-                            TempPoint[length - 1].octavenum = i;
-                            TempPoint[length - 1].intervalnum = j;
-                            TempPoint[length - 1].sigma = pow((float) 2, i + j / (float) intervalnum);//先用图片顺序记着
-                            count = 0;
-                        }
-
-                        //求极小值
-                        if (flag) {
-                            /**
-                             * 三个尺度内的26个点进行极值点比较
-                             */
-                            count = 0;
-                            for (int m = -1; m < 2; ++m) {
-                                for (p = -1; p < 2; p++) {
-                                    for (q = -1; q < 2; q++) {
-                                        if (diff_ip->mats[i][j].data[h][w] <=
-                                            diff_ip->mats[i][j + m].data[h + p][w + q]) {
-                                            count++;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (count == 27 && fabs(diff_ip->mats[i][j].data[h][w]) > threshold2) {
-                            flag = 0;
-                            length++;
-                            TempPoint = (KeyPoint *) realloc(TempPoint, sizeof(KeyPoint) * length);
-                            TempPoint[length - 1].point.row = h;
-                            TempPoint[length - 1].point.col = w;
-                            TempPoint[length - 1].octavenum = i;
-                            TempPoint[length - 1].intervalnum = j;
-                            TempPoint[length - 1].sigma = pow((float) 2, i + j / (float) intervalnum);//先用图片顺序记着
-                        }
-                    } else {
-                        flag = 1;
-                        /**
-                         * 一个尺度内的26个点进行极值点比较
-                         */
-                        count = 0;
+                    /**
+                     * 三个尺度内的26个点进行极值点比较
+                     */
+                    big_then_count = 0;
+                    small_then_count = 0;
+                    for (int m = -1; m < 2; ++m) {
                         for (p = -1; p < 2; p++) {
                             for (q = -1; q < 2; q++) {
-                                if (diff_ip->mats[i][j].data[h][w] >= diff_ip->mats[i][j].data[h + p][w + q]) {
-                                    count++;
+                                if (diff_ip->mats[i][j].data[h][w] >= diff_ip->mats[i][j + m].data[h + p][w + q]) {
+                                    big_then_count++;
+                                } else if (diff_ip->mats[i][j].data[h][w] <=
+                                           diff_ip->mats[i][j + m].data[h + p][w + q]) {
+                                    small_then_count++;
                                 }
                             }
-                        }
-
-                        if (count == 9 && fabs(diff_ip->mats[i][j].data[h][w]) > threshold2) {
-                            flag = 0;
-                            length++;
-                            TempPoint = (KeyPoint *) realloc(TempPoint, sizeof(KeyPoint) * length);
-                            TempPoint[length - 1].point.row = h;
-                            TempPoint[length - 1].point.col = w;
-                            TempPoint[length - 1].octavenum = i;
-                            TempPoint[length - 1].intervalnum = j;
-                            TempPoint[length - 1].sigma = pow((float) 2, i + j / (float) intervalnum);//先用图片顺序记着
-                            count = 0;
-                        }
-
-                        //求极小值
-                        if (flag) {
-                            /**
-                             * 一个个尺度内的26个点进行极值点比较
-                             */
-                            count = 0;
-
-                            for (p = -1; p < 2; p++) {
-                                for (q = -1; q < 2; q++) {
-                                    if (diff_ip->mats[i][j].data[h][w] <=
-                                        diff_ip->mats[i][j].data[h + p][w + q]) {
-                                        count++;
-                                    }
-                                }
-                            }
-
-                        }
-
-                        if (count == 9 && fabs(diff_ip->mats[i][j].data[h][w]) > threshold2) {
-                            flag = 0;
-                            length++;
-                            TempPoint = (KeyPoint *) realloc(TempPoint, sizeof(KeyPoint) * length);
-                            TempPoint[length - 1].point.row = h;
-                            TempPoint[length - 1].point.col = w;
-                            TempPoint[length - 1].octavenum = i;
-                            TempPoint[length - 1].intervalnum = j;
-                            TempPoint[length - 1].sigma = pow((float) 2, i + j / (float) intervalnum);//先用图片顺序记着
                         }
                     }
-
+                    //此点是最大值或者最小值
+                    if (big_then_count == 27 || small_then_count == 27) {
+                        length++;
+                        TempPoint = (KeyPoint *) realloc(TempPoint, sizeof(KeyPoint) * length);
+                        TempPoint[length - 1].point.row = h;
+                        TempPoint[length - 1].point.col = w;
+                        TempPoint[length - 1].octavenum = i;
+                        TempPoint[length - 1].intervalnum = j;
+                        TempPoint[length - 1].sigma = pow((float) 2, i + j / (float) intervalnum);//先用图片顺序记
+                    }
+                    big_then_count = 0;
+                    small_then_count = 0;
                 }
             }
         }
@@ -814,18 +776,15 @@ void CreateKeyPointDescriptor(ImagePyramid *DiffPyramid, ImagePyramid *ImgPyrami
     }
 }
 
+
 KeyPointGroup *SIFT(Matrix *mat) {
 
     ImagePyramid *ip = new ImagePyramid;
     std::cout << "build GuassPyramif" << std::endl;
-    ip->build(mat, 64, 5);
+    ip->build(mat, 64, 1);
     std::cout << "build GuassDiffPyramif" << std::endl;
     ImagePyramid *diff_ip = ip->buildDiff();
     std::cout << "SearchKeyPointPosition" << std::endl;
-    /*
-     * SearchKeyPointPosition默认使用三个尺度寻找局部极值
-     * tip:实验证明两张对比的图片，旋转的角度越大，选用三尺度空间寻找极值匹配的结果优越
-     */
 
     auto KP = SearchKeyPointPosition(ip, diff_ip);
     std::cout << "CreateKeyPointDescriptor" << std::endl;
@@ -842,6 +801,7 @@ Point GetInitPosition(KeyPoint *KP) {
 
     return p;
 }
+
 
 double Norm(double *p, double *q, int length) {
     double Answer;
@@ -891,6 +851,9 @@ MatchPoint *Match(KeyPointGroup *KPG1, KeyPointGroup *KPG2) {
             if (KPG2->point[j].flag == false) {
                 continue;
             }
+            /*
+             * Norm是两个特征向量之间的差向量的模，模越小，说明两个向量越相似，以此来匹配特征点
+             */
             TempNorm = Norm(KPG1->point[i].descriptor, KPG2->point[j].descriptor, 128);
             if (TempNorm < nn1) {
                 nn1 = TempNorm;
@@ -900,6 +863,11 @@ MatchPoint *Match(KeyPointGroup *KPG1, KeyPointGroup *KPG2) {
             }
         }
 
+        /*
+         * nn1表示相似性的最小值，nn2表示相似性的第二小值，
+         * 如果nn1与nn1之间很接近的话，nn1和nn2对应的两个待匹配点就很难区分，这两个点会互相干扰匹配，
+         * 所以要判断nn1和nn2之间的相似性来最终确定匹配点
+         */
         if (nn1 / nn2 < threshold) {
             MatchNumber++;
             Matchpoint->Img1 = (Point *) realloc(Matchpoint->Img1, sizeof(Point) * MatchNumber);

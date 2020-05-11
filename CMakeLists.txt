@@ -11,4 +11,5 @@ add_executable(sift_cpp
         pgmer.hpp
         sift.hpp
         utils.cpp
-        utils.h)
+        utils.h
+        )
